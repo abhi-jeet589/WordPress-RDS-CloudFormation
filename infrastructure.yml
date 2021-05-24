@@ -1,0 +1,183 @@
+Parameters:
+  DBUsername:
+    NoEcho: 'false'
+    Description: Username for MySQL database access
+    Type: String
+    MinLength: '1'
+    MaxLength: '16'
+    AllowedPattern: '[a-zA-Z][a-zA-Z0-9]*'
+    ConstraintDescription: must begin with a letter and contain only alphanumeric characters.
+
+  DBPassword:
+    NoEcho: 'true'
+    Description: Password MySQL database access
+    Type: String
+    MinLength: '8'
+    MaxLength: '41'
+    AllowedPattern: '[a-zA-Z0-9]*'
+    ConstraintDescription: must contain only alphanumeric characters.
+
+Resources:
+  InfrastructureVPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: "170.0.0.0/16"
+      EnableDnsHostnames: true
+      EnableDnsSupport: true
+      InstanceTenancy: "default"
+      Tags: 
+        - Key: "Name"
+          Value: "Wordpress-Database-VPC"
+
+  InternetGatewayForVPC:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: "Name"
+          Value: "Internet-Gateway-VPC"
+
+  InternetGatewayAttachmentVPC:
+    Type: AWS::EC2::VPCGatewayAttachment
+    DependsOn:
+      - "InfrastructureVPC"
+      - "InternetGatewayForVPC"
+    Properties:
+      InternetGatewayId: !Ref InternetGatewayForVPC
+      VpcId: !Ref InfrastructureVPC
+      
+
+  PublicSubnet:
+    Type: AWS::EC2::Subnet
+    DependsOn: "InfrastructureVPC"
+    Properties:
+      VpcId: !Ref InfrastructureVPC
+      CidrBlock: "170.0.1.0/24"
+      AvailabilityZone: "ap-south-1a"
+      Tags:
+        - Key: "Name"
+          Value: "Public Subnet"
+      
+  
+  PrivateSubnet:
+    Type: AWS::EC2::Subnet
+    DependsOn: "InfrastructureVPC"
+    Properties:
+      VpcId: !Ref InfrastructureVPC
+      CidrBlock: "170.0.2.0/24"
+      AvailabilityZone: "ap-south-1b"
+      Tags:
+        - Key: "Name"
+          Value: "Private Subnet"
+      
+
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref InfrastructureVPC
+      Tags:
+        - Key: "Name"
+          Value: "Public Routing Table"
+
+  PrivateRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref InfrastructureVPC
+      Tags:
+        - Key: "Name"
+          Value: "Private Routing Table"
+
+  RouteToAddInPublicRouteTable:
+    Type: AWS::EC2::Route
+    DependsOn: "PublicRouteTable"
+    Properties:
+      GatewayId: !Ref InternetGatewayForVPC
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: "0.0.0.0/0"
+
+  PublicSubnetRouteTableIntegration:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    DependsOn:
+      - "RouteToAddInPublicRouteTable"
+      - "PublicSubnet"
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      SubnetId: !Ref PublicSubnet
+
+  PrivateSubnetRouteTableIntegration:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    DependsOn: 
+      - "PrivateRouteTable"
+      - "PrivateSubnet"
+    Properties:      
+      RouteTableId: !Ref PrivateRouteTable
+      SubnetId: !Ref PrivateSubnet
+
+  DatabaseSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: "Allow mysql port"
+      VpcId: !Ref InfrastructureVPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 3306
+          ToPort: 3306
+          CidrIp: "170.0.1.0/24"
+
+  DatabaseSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: "Associating DB to new VPC"
+      DBSubnetGroupName: "wordpressMysqlGroup"
+      SubnetIds:
+      - !Ref PrivateSubnet
+      - !Ref PublicSubnet
+
+  MySQLDatabase:
+    Type: AWS::RDS::DBInstance
+    DependsOn:
+      - "DatabaseSubnetGroup"
+      - "DatabaseSecurityGroup"
+    Properties:
+      AllocatedStorage: 20
+      AvailabilityZone: !GetAtt PrivateSubnet.AvailabilityZone
+      DBInstanceClass: "db.t2.micro"
+      DBInstanceIdentifier: "wordpress-mysql-database"
+      DBName: "wordpressdb"
+      Engine: "mysql"
+      EngineVersion: "5.7.30"
+      MasterUsername: !Ref DBUsername
+      MasterUserPassword: !Ref DBPassword
+      StorageType: "gp2"
+      DBSubnetGroupName: "wordpressMysqlGroup"
+      Tags:
+        - Key: "Name"
+          Value: "MYSQL Database for Wordpress"
+      VPCSecurityGroups:
+      - !Ref DatabaseSecurityGroup
+
+  WordpressSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: "Allow http port for Wordpress"
+      VpcId: !Ref InfrastructureVPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: "0.0.0.0/0"
+
+  WordpressInstance:
+    Type: AWS::EC2::Instance
+    DependsOn:
+      - "WordpressSecurityGroup"
+    Properties:
+      AvailabilityZone: !GetAtt PublicSubnet.AvailabilityZone
+      ImageId: "ami-068d43a544160b7ef"
+      InstanceType: "t2.micro"
+      KeyName: "oskey"
+      SecurityGroupIds:
+      - !Ref WordpressSecurityGroup
+      SubnetId: !Ref PublicSubnet
+      Tags:
+        - Key: "Name"
+          Value: "WordPress OS"
